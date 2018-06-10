@@ -1,0 +1,7 @@
+Stage, Transaction Date, Card No., Description, Debit, Credit
+POSTED,2018-05-31,1234,Trader Joe’s,100.05,
+POSTED,2018-05-31,1234,Amazon Item Return,,20.25
+POSTED,2018-05-30,1234,Ticket,14.02,
+POSTED,2018-05-30,1234,Trader Joe’s,1.05,
+POSTED,2017-12-27,1234,Trader Joe’s,3.2,
+POSTED,2018-12-05,1234,Trader Joe’s,20.25,

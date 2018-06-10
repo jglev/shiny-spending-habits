@@ -1,0 +1,664 @@
+---
+title: "Spending Habits"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(ggvis)
+library(DT)
+library(flexdashboard)
+library(lubridate)
+library(magrittr)
+library(plotly)
+library(tidyverse)
+library(rhandsontable)
+library(shiny)
+```
+
+```{r initial settings}
+figure_height <- 6
+figure_width <- 1
+```
+
+```{r load data}
+source('read_metadata.R')
+
+dataset <- list.dirs(
+  path = 'data',
+  full.names = TRUE,
+  recursive = TRUE
+) %>% 
+  magrittr::extract(-1) %>%  ## Remove the 'data' directory itself
+  purrr::map_dfr(load_csv_using_yaml)
+
+```
+
+Sidebar {.sidebar}
+=====================================
+
+```{r look at transaction descriptions}
+## See unique descriptions
+# dataset %>%
+#   dplyr::distinct(Description) %>%
+#   dplyr::pull() %>%
+#   sort() %>% 
+#   clipr::write_clip()
+
+transaction_categories_file <- 'recategorization.csv'
+
+transaction_categories <- readr::read_csv(
+  transaction_categories_file
+)
+# View(transaction_categories)
+
+## Add category markers to each row:
+long_transactions <- dataset %>% 
+  pull(Description) %>% 
+  # magrittr::extract(1:11) %>%  ## Useful for debugging
+  purrr::map(
+    function(transaction_description) {
+      purrr::pmap(
+        list(
+          as.list(transaction_categories$regex),
+          as.list(transaction_categories$category),
+          as.list(transaction_categories$subcategory)
+        ),
+        function(search_term, `Custom Category`, `Custom Subcategory`) {
+          if (
+            grepl(search_term, transaction_description, ignore.case = TRUE)
+          ) {
+            return(tibble(`Custom Category` = `Custom Category`, `Custom Subcategory` = `Custom Subcategory`))
+          }
+        } 
+      ) %>% bind_rows()
+    }
+  ) %>% 
+  purrr::map(
+    function(x) {
+      if (nrow(x) > 0) {
+        x
+      } else {
+        tibble::tibble(`Custom Category` = NA, `Custom Subcategory` = NA)
+      }
+    }
+  ) %>%
+  dplyr::bind_rows(.id = 'Row') %>% 
+  dplyr::mutate(Row = as.integer(Row))
+
+dataset %<>% 
+  tibble::rowid_to_column(var = 'Row') %>% 
+  dplyr::left_join(long_transactions, by = 'Row')
+
+## Move to factor variable types:
+dataset %<>% 
+  dplyr::mutate(
+    `Custom Category` = as.factor(`Custom Category`),
+    `Custom Subcategory` = as.factor(`Custom Subcategory`)
+  )
+
+## Convert dates:
+## NOTE: This is now handled in read_metadata.R
+# dataset %<>% 
+#   dplyr::mutate(
+#     `Transaction Date` = as.Date(
+#       `Transaction Date`,
+#        format = "%m/%d/%Y"
+#     ),
+#     `Posted Date` = as.Date(
+#       `Posted Date`,
+#        format = "%m/%d/%y"
+#     )
+#   )
+
+# dataset %>% 
+#   filter(!is.na(`Custom Category`)) %>% 
+#   dplyr::group_by(`Custom Category`) %>% 
+#   dplyr::summarise(sum = sum(`Combined Amount`))
+
+## Unclassified descriptions:
+unclassified_descriptions <- dataset %>% 
+  dplyr::filter(is.na(`Custom Category`)) %>% 
+  dplyr::select(Description) %>% 
+  dplyr::distinct() %>% 
+  dplyr::arrange(Description)
+
+# message(unclassified_descriptions)
+
+## Works, using ggplot
+ggplot_category_with_subcategory_bars <- renderPlot({
+  filtered_dataset() %>%
+    # filter(tolower(`Custom Category`) != 'credit card') %>%
+    ggplot(
+      {if (input$plot_spending_by_percentage == TRUE) {
+        aes(x = `Custom Category`, y = `Percent of Custom Category`, fill = `Custom Subcategory`)
+      } else {
+        aes(x = `Custom Category`, y = `Combined Amount`, fill = `Custom Subcategory`)
+      }}
+    ) +
+      geom_hline(aes(yintercept = 0), color = "white", size = 5) +
+      {if (input$plot_spending_stack == FALSE) {
+        geom_col(position = 'dodge')
+      } else {
+        geom_col()
+      }} +
+      xlab('Category') +
+      coord_flip() +
+      {if (input$plot_spending_by_percentage == FALSE) {
+        scale_y_reverse()
+      }} +
+      {if (input$plot_spending_by_percentage == TRUE) {
+        ylab('Percentage of Spending')
+      } else {
+        ylab('Amount\n(Negative numbers = more spending)')
+      }} +
+      theme(
+        text = element_text(size = 20),
+        axis.text.x = element_text(angle = 90, hjust = 1)
+      )
+})
+# output$bar <- renderPlot({
+#   ggplot_category_with_subcategory_bars
+# })
+
+# plotOutput("bar", click = "clickBar", height = 350)
+
+min_transaction_date <- dataset %>% dplyr::pull(`Date`) %>% min()
+max_transaction_date <- dataset %>% dplyr::pull(`Date`) %>% max()
+
+inputPanel(
+  selectizeInput(
+    'source_selector',
+    label = 'Source: ',
+    choices = dataset %>% select(`Source`) %>% 
+      distinct() %>% arrange() %>% pull() %>% na.omit(),
+    # selected = c(),
+    multiple = TRUE
+  ),
+  selectizeInput(
+    'category_selector',
+    label = 'Category: ',
+    choices = dataset %>% select(`Custom Category`) %>% 
+      distinct() %>% arrange() %>% pull() %>% na.omit(),
+    # selected = c(),
+    multiple = TRUE
+  ),
+  uiOutput("subcategoryOptions"),
+  selectizeInput(
+    'category_exclude_selector',
+    label = 'Category to Exclude: ',
+    choices = dataset %>% select(`Custom Category`) %>% 
+      distinct() %>% arrange() %>% pull() %>% na.omit(),
+    # selected = c(),
+    multiple = TRUE
+  ),
+  uiOutput("subcategory_excludeOptions"),
+  textInput(
+    'row_exclude_selector',
+    'Specific Row IDs to Exclude (comma-separated): ',
+    ''
+  ),
+  dateRangeInput(
+    "date_range",
+    "Date range:",
+    start  = min_transaction_date, # max_transaction_date %m-% months(1),
+    ## See https://stackoverflow.com/a/5226089 re: subtracting a month:
+    end    = max_transaction_date,
+    min    = min_transaction_date,
+    max    = max_transaction_date,
+    format = "mm-dd-yyyy",
+    separator = " - "
+  ),
+  h3(textOutput('number_of_filtered_rows'))
+)
+
+output$subcategoryOptions <- renderUI({
+  selectizeInput(
+    'subcategory_selector',
+    label = 'Subcategory: ',
+    choices = if (length(input$category_selector) > 0) {
+      dataset %>% 
+        filter(`Custom Category` %in% input$category_selector) %>% 
+        select(`Custom Subcategory`) %>% 
+        distinct() %>% arrange() %>% pull() %>% na.omit()
+      } else {
+        NULL
+      },
+    # selected = NA,
+    multiple = TRUE
+  )
+})
+
+output$subcategory_excludeOptions <- renderUI({
+  selectizeInput(
+    'subcategory_exclude_selector',
+    label = 'Subcategory to Exclude: ',
+    choices = if (length(input$category_exclude_selector) > 0) {
+      dataset %>% 
+        filter(`Custom Category` %in% input$category_exclude_selector) %>% 
+        select(`Custom Subcategory`) %>% 
+        distinct() %>% arrange() %>% pull() %>% na.omit()
+      } else {
+        NULL
+      },
+    # selected = NA,
+    multiple = TRUE
+  )
+})
+
+filtered_dataset <- reactive({
+  rows_to_exclude <- strsplit(
+    input$row_exclude_selector,
+    ","
+  ) %>% 
+    magrittr::extract2(1) %>% 
+    as.numeric()
+  
+  dataset %>% 
+    purrr::when(
+      length(input$source_selector) > 0 ~ (.) %>% 
+        dplyr::filter(
+          `Source` %in% input$source_selector
+        ),
+      ~ (.)
+    ) %>% 
+    purrr::when(
+      length(input$category_selector) > 0 ~ (.) %>% 
+        dplyr::filter(
+          `Custom Category` %in% input$category_selector
+        ),
+      ~ (.)
+    ) %>% 
+    purrr::when(
+      length(input$subcategory_selector) > 0 ~ (.) %>% 
+        dplyr::filter(
+          `Custom Subcategory` %in% input$subcategory_selector
+        ),
+      ~ (.)
+    ) %>% 
+    purrr::when(
+      length(input$category_exclude_selector) > 0 ~ (.) %>% 
+        dplyr::filter(
+          ! `Custom Category` %in% input$category_exclude_selector
+        ),
+      ~ (.)
+    ) %>% 
+    purrr::when(
+      length(input$subcategory_exclude_selector) > 0 ~ (.) %>% 
+        dplyr::filter(
+          ! `Custom Subcategory` %in% input$subcategory_exclude_selector
+        ),
+      ~ (.)
+    ) %>% 
+    purrr::when(
+      length(rows_to_exclude) > 0 ~ (.) %>% 
+        dplyr::filter(
+          ! Row %in% rows_to_exclude
+        ),
+      ~ (.)
+    ) %>% 
+    dplyr::filter(
+      `Date` >= input$date_range[1]-1 & 
+      `Date` <= input$date_range[2]+1
+    ) %>% 
+    dplyr::distinct() %>% 
+    ## Calculate the percentage that each transaction is for each
+    ## category and each subcategory:
+    ## See https://stackoverflow.com/a/29551416 re: getting percent
+    dplyr::group_by(`Custom Category`) %>%
+    mutate(
+      `Percent of Custom Category` = round(`Combined Amount`/sum(`Combined Amount`)*100, 2)) %>% 
+    ungroup() %>% 
+    dplyr::group_by(`Custom Subcategory`) %>%
+    mutate(
+      `Percent of Custom Subcategory` = round(`Combined Amount`/sum(`Combined Amount`)*100, 2)) %>% 
+    ungroup()
+})
+
+```
+
+Transaction Explorer
+=====================================
+
+```{r transactions explorer}
+output$transactions_table = DT::renderDataTable({
+  filtered_dataset() %>% 
+    dplyr::select(-Month, -Year, -Day)
+})
+
+sum_of_transactions <- function(
+  table_to_use,
+  data_table_id,
+  row_id_column,
+  amount_column
+){
+  selected_rows_selector <- paste0(data_table_id, '_rows_selected')
+  
+  message(input[[selected_rows_selector]])
+  
+  sum_to_report <- table_to_use %>% 
+    purrr::when(
+      input[[selected_rows_selector]] %>% length() > 0 ~ (.) %>% 
+      dplyr::slice(as.numeric(input[[selected_rows_selector]])),
+      ~ (.)
+    ) %>% 
+    ## Do not count the same row twice:
+      dplyr::group_by(Row) %>% 
+      dplyr::filter(row_number() == 1) %>% 
+    dplyr::pull(!!amount_column) %>% 
+    sum()
+  
+  sum_to_report
+}
+
+h3(renderText({
+  paste0("Sum of selected transactions: ", 
+    sum_of_transactions(
+      filtered_dataset(),
+      'transactions_table',
+      'Row',
+      'Combined Amount'
+    )
+  )
+}))
+
+```
+
+<!-- Row {data-width=650} -->
+
+Row
+-----------------------------------------------------------------------
+
+### Transactions
+
+```{r}
+DT::dataTableOutput("transactions_table")
+```
+
+Summary Table
+=====================================
+
+Row
+-----------------------------------------------------------------------
+
+### Spending Summary
+
+```{r define spending summary table}
+summary_spending <- reactive({
+  filtered_dataset() %>% 
+  # dataset %>% 
+    ## Unlike above, we will not chunk down by row here.
+    # dplyr::group_by(Row) %>%  ## Get rid of duplicate rows (based on RowID)
+    # dplyr::filter(row_number() == 1) %>%
+    ungroup() %>% 
+    purrr::when(
+      length(input$summary_table_summarize_by) > 0 ~ (.) %>%
+        dplyr::group_by_at(
+          vars(
+            input$summary_table_summarize_by,
+            Row
+          )
+        ),
+      ~ (.) %>% dplyr::group_by(Row)
+    ) %>%
+    ## Do not count the same row twice:
+      # dplyr::group_by(Row) %>% 
+      dplyr::filter(row_number() == 1) %>% 
+      dplyr::ungroup() %>% 
+      purrr::when(
+        length(input$summary_table_summarize_by) > 0 ~ (.) %>%
+          dplyr::group_by_at(
+            vars(
+              input$summary_table_summarize_by
+            )
+          ),
+        ~ (.)
+      ) %>%
+    dplyr::summarise(Total = sum(`Combined Amount`)) %>%
+    tibble::rowid_to_column(var = 'Row') %>%
+    ## Strip out all of the grouping information, so that this will work
+    ## when summing transactions below:
+    dplyr::as_data_frame()
+})
+
+output$summary_spending_table <- DT::renderDataTable({
+  summary_spending() # %>% 
+    # dplyr::select(-Row)
+})
+
+summary_spending_for_total <- reactive({
+  if (input[['summary_spending_table_rows_selected']] %>% length() > 0) {
+    rows_to_select <- input[['summary_spending_table_rows_selected']] %>%
+      as.numeric()
+    
+    purrr::when(
+      ## Take the place of the normal magrittr first-place piped-in
+      ## argument.
+      NULL,
+      length(input$summary_table_summarize_by) > 0 ~ 
+        summary_spending() %>% 
+          dplyr::slice(rows_to_select) %>% 
+          dplyr::select(-Row) %>% 
+          dplyr::inner_join(
+            filtered_dataset()
+          ),
+      ~ filtered_dataset()
+    ) %>% 
+      ## Do not count the same row twice:
+      dplyr::group_by(Row) %>% 
+      dplyr::filter(row_number() == 1) %>% 
+      dplyr::pull(`Combined Amount`) %>% 
+      sum()
+  } else {
+    filtered_dataset() %>% 
+      ## Do not count the same row twice:
+      dplyr::group_by(Row) %>% 
+      dplyr::filter(row_number() == 1) %>% 
+      dplyr::pull(`Combined Amount`) %>% 
+      sum()
+  }
+})
+
+# output$summary_spending_table2 <- DT::renderDataTable({
+#   summary_spending_for_total()
+# })
+
+h3(renderText({
+  paste0(
+    'Sum of selected transactions (Not double-counting across categories): ',
+    summary_spending_for_total()
+  )
+}))
+```
+
+```{r spending table input}
+inputPanel(
+  checkboxGroupInput(
+    'summary_table_summarize_by', 
+    'Summarize by ', 
+    choices = c(
+      'Custom Category',
+      'Custom Subcategory',
+      'Year',
+      'Month'
+    ),
+    selected = c('Year', 'Month'),
+    inline = FALSE
+  )
+)
+```
+
+```{r display spending summary table}
+DT::dataTableOutput({"summary_spending_table"})
+# DT::dataTableOutput({"summary_spending_table2"})
+```
+
+Visualizations
+=====================================
+
+**Note that in the visualizations below, each category is treated as independent of all others. That means that individual transactions are counted more than once if they are part of more than one category or sub-category.**
+
+**For understanding total spending *without double-counting transactions,* you can click on individuals lines in the "Summary Table" tab to add without double-counting.**
+
+Row
+-----------------------------------------------------------------------
+
+### Category + Subcategory Spending {data-width=20%}
+
+```{r bar chart percent indicator, fig.width = figure_width, fig.height = figure_height}
+inputPanel(
+  checkboxInput(
+    'plot_spending_by_percentage',
+    'Plot percentage of each category? ',
+    value = FALSE
+  ),
+  checkboxInput(
+    'plot_spending_stack',
+    'Stack columns? ',
+    value = TRUE
+  )
+)
+```
+
+### {data-width=80%}
+
+```{r render bar chart, fig.width = figure_width, fig.height = figure_height}
+ggplot_category_with_subcategory_bars
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Spending Over Time {data-width=20%}
+
+```{r time plot percent indicator, fig.width = figure_width, fig.height = figure_height}
+inputPanel(
+  checkboxInput(
+    'time_plot_spending_by_percentage',
+    'Plot percentage of each category? ',
+    value = FALSE
+  ),
+  checkboxInput(
+    'time_plot_show_subcategories',
+    'Show subcategories? ',
+    value = FALSE
+  ),
+  checkboxInput(
+    'time_plot_show_points',
+    'Show data points? ',
+    value = TRUE
+  ),
+  selectInput(
+    'time_plot_facet_by',
+    "Facet by: ",
+    choices = c('None', 'Month', 'Year', 'Month + Year', 'Year + Month'),
+    selected = 'None',
+    multiple = FALSE
+  )
+)
+```
+
+```{r create time plot}
+time_plot_y <- reactive({
+  if (input$time_plot_spending_by_percentage == TRUE) {
+    'Percent of Custom Category'
+  } else {
+    'Combined Amount'
+  }
+})
+
+time_plot_x <- reactive({
+  if (input$time_plot_facet_by == 'Month + Year') {
+    'Year'
+  } else if (
+    input$time_plot_facet_by == 'Year + Month'
+  ) {
+    'Month'
+  } else if (
+    input$time_plot_facet_by == 'Month'
+  ) {
+    'Day'
+  } else {
+    'Date'
+  }
+})
+  
+time_plot_color <- reactive({
+  if (input$time_plot_show_subcategories == TRUE) {
+    'Custom Subcategory'
+  } else {
+    'Custom Category'
+  }
+})
+
+time_plot_facet_by <- reactive({
+  if (
+    input$time_plot_facet_by == 'Year' |
+    input$time_plot_facet_by == 'Year + Month'
+  ) {
+    'Year'
+  } else if (
+    input$time_plot_facet_by == 'Month' |
+    input$time_plot_facet_by == 'Month + Year'
+  ) {
+    'Month'
+  }
+})
+
+ggplot_time_plot <- renderPlot({
+  filtered_dataset() %>% 
+    ggplot(
+      aes_string(x = as.name(time_plot_x()), y = as.name(time_plot_y()), color = as.name(time_plot_color()))
+    ) +
+      {if (input$time_plot_facet_by != 'None') {
+        facet_wrap(as.formula(paste("~", time_plot_facet_by())))
+      }} +
+      {if (input$time_plot_show_points == TRUE) {
+        geom_point()
+      }} +
+      {if (input$time_plot_spending_by_percentage == FALSE) {
+        scale_y_reverse()
+      }} +
+      {if (input$time_plot_spending_by_percentage == TRUE) {
+        ylab('Percentage of Spending')
+      } else {
+        ylab('Amount\n(Negative numbers = more spending)')
+      }} +
+      # {if (
+      #   input$time_plot_facet_by == 'Month + Year' |
+      #   input$time_plot_facet_by == 'Year + Month'
+      # ) {
+      #  scale_x_discrete()
+      # }} +
+      geom_smooth(method = 'glm', se = FALSE) +
+      theme(
+        text = element_text(size = 20),
+        axis.text.x = element_text(angle = 90, hjust = 1)
+      )
+})
+```
+
+### {data-width=80%}
+
+```{r render time plot, fig.width = figure_width, fig.height = figure_height}
+ggplot_time_plot
+```
+
+Uncategorized Descriptions
+=====================================  
+
+### Unclassified Descriptions
+
+You can update ``r transaction_categories_file`` and refresh this page.
+
+
+```{r}
+## For the future, see
+## https://github.com/jrowen/rhandsontable/tree/master/inst/examples/rhandsontable_datafile
+## for an example of updating a table
+DT::renderDataTable({unclassified_descriptions})
+```

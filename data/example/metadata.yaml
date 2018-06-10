@@ -1,0 +1,13 @@
+source_title: "Example"
+description_column_name: "Description"
+date_column: "Transaction Date"
+# For date_format below:
+# See the "Date Formats" section of
+# https://www.r-bloggers.com/date-formats-in-r/, or Run the command
+# ?strptime in the R console, to see the abbreviation formats.
+# For example, "%m/%d/%Y" corresponds to the date format
+# "06/25/2018", while "%Y-%m-%d" corresponds to the date format
+# "2018-06-25".
+date_format: "%Y-%m-%d"
+debit_column: "Debit"
+credit_column: "Credit"

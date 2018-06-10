@@ -1,0 +1,36 @@
+regex,category,subcategory
+amazon,shopping,
+amtrak,travel,train
+bar,food,bar
+thai,food,restaurant
+tickets,entertainment,show
+capital one,credit card,
+cosi,food,restaurant
+cash back,credit card,
+cvs,pharmacy,
+donuts,food,dessert
+etsy,entertainment,art
+grocer,food,grocery
+google,entertainment,app
+cafe,food,cafe
+lyft,travel,taxi
+bakery,food,cafe
+paypal,entertainment,art
+pret a manger,food,cafe
+rite aid,pharmacy,
+\\brest,food,restaurant
+spotify,entertainment,music
+bagel,food,cafe
+coffee,food,cafe
+starbucks,food,cafe
+taco,food,restaurant
+tkts,entertainment,show
+trader joe,food,grocery
+aubon *pain,food,cafe
+usps,mail,
+venmo,venmo,
+verizon,utilities,
+drug,pharmacy,
+wawa,food,cafe
+wine,food,alcohol
+spirits,food,alcohol
