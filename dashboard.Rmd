@@ -8,16 +8,22 @@ runtime: shiny
 ---
 
 ```{r setup, include=FALSE}
-library(ggplot2)
-library(ggvis)
-library(DT)
-library(flexdashboard)
-library(lubridate)
-library(magrittr)
-library(plotly)
-library(tidyverse)
-library(rhandsontable)
-library(shiny)
+source('check_packages.R')
+
+check_packages(
+  c(
+    'ggplot2',
+    'ggvis',
+    'DT',
+    'flexdashboard',
+    'lubridate',
+    'magrittr',
+    'plotly',
+    'tidyverse',
+    'rhandsontable',
+    'shiny'
+  )
+)
 ```
 
 ```{r initial settings}
